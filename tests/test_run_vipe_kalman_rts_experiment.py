@@ -1,6 +1,8 @@
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 import unittest
 
 from pathlib import Path
@@ -10,6 +12,7 @@ from scripts.run_vipe_kalman_rts_experiment import (
     discover_eligible_uuids,
     has_pose_ground_truth,
     load_or_sample_uuids,
+    run_bounded_workers,
     render_compare_markdown,
     resolve_front_video_path,
     sample_uuids,
@@ -140,6 +143,23 @@ class VipeExperimentRunnerTest(unittest.TestCase):
         self.assertIn("Kalman+RTS", markdown)
         self.assertIn("ate_se3_rmse_mean", markdown)
 
+    def test_render_compare_markdown_mentions_camera_name(self) -> None:
+        compare = {
+            "ate_se3_rmse_mean": {
+                "raw": 2.0,
+                "kalman_rts": 1.5,
+                "delta": -0.5,
+            }
+        }
+
+        markdown = render_compare_markdown(
+            compare,
+            evaluated_count=10,
+            camera_name="camera_front_tele_30fov_undistorted",
+        )
+
+        self.assertIn("camera_front_tele_30fov_undistorted", markdown)
+
     def test_load_or_sample_uuids_prefers_saved_sample_list(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             sample_path = Path(tmpdir) / "sampled_uuids.json"
@@ -153,6 +173,24 @@ class VipeExperimentRunnerTest(unittest.TestCase):
             )
 
             self.assertEqual(sampled, ["uuid-b", "uuid-a"])
+
+    def test_run_bounded_workers_limits_parallelism(self) -> None:
+        lock = threading.Lock()
+        state = {"active": 0, "max_active": 0}
+
+        def worker(item: str) -> str:
+            with lock:
+                state["active"] += 1
+                state["max_active"] = max(state["max_active"], state["active"])
+            time.sleep(0.05)
+            with lock:
+                state["active"] -= 1
+            return item
+
+        results = run_bounded_workers(["a", "b", "c"], max_parallel_jobs=2, worker=worker)
+
+        self.assertEqual(sorted(results), ["a", "b", "c"])
+        self.assertEqual(state["max_active"], 2)
 
     def test_runner_script_help_executes_directly(self) -> None:
         proc = subprocess.run(

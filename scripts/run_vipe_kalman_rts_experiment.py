@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import json
 import random
 import subprocess
@@ -97,6 +98,22 @@ def find_pose_artifact(result_dir: Path) -> Path | None:
     return artifacts[0] if len(artifacts) == 1 else None
 
 
+def run_bounded_workers(items: list, max_parallel_jobs: int, worker) -> list:
+    if max_parallel_jobs < 1:
+        raise ValueError("max_parallel_jobs must be at least 1")
+    if not items:
+        return []
+    if max_parallel_jobs == 1:
+        return [worker(item) for item in items]
+
+    results: list = []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_parallel_jobs) as executor:
+        futures = [executor.submit(worker, item) for item in items]
+        for future in concurrent.futures.as_completed(futures):
+            results.append(future.result())
+    return results
+
+
 def run_raw_vipe(
     repo_root: Path,
     video_path: Path,
@@ -131,6 +148,40 @@ def run_smoothing(raw_uuid_dir: Path, smooth_uuid_dir: Path, dt: float) -> Path:
     output_pose = smooth_uuid_dir / "pose" / input_pose.name
     smooth_pose_artifact(input_pose, output_pose, dt=dt)
     return output_pose
+
+
+def run_uuid_pipeline(
+    uuid: str,
+    by_uuid_root: Path,
+    repo_root: Path,
+    raw_root: Path,
+    smooth_root: Path,
+    camera_name: str,
+    dt: float,
+    force: bool,
+    python_executable: str,
+) -> list[dict]:
+    uuid_dir = by_uuid_root / uuid
+    video_path = resolve_front_video_path(uuid_dir, camera_name=camera_name)
+    raw_uuid_dir = raw_root / uuid
+    smooth_uuid_dir = smooth_root / uuid
+    run_log: list[dict] = []
+
+    pose_artifact = find_pose_artifact(raw_uuid_dir)
+    if pose_artifact is None or force:
+        infer_result = run_raw_vipe(repo_root, video_path, raw_uuid_dir, python_executable=python_executable)
+        run_log.append({"uuid": uuid, "stage": "raw_vipe", **infer_result})
+        if infer_result["returncode"] != 0:
+            return run_log
+    else:
+        run_log.append({"uuid": uuid, "stage": "raw_vipe", "status": "skipped_existing"})
+
+    try:
+        output_pose = run_smoothing(raw_uuid_dir, smooth_uuid_dir, dt=dt)
+        run_log.append({"uuid": uuid, "stage": "kalman_rts", "output_pose": str(output_pose), "status": "ok"})
+    except Exception as exc:
+        run_log.append({"uuid": uuid, "stage": "kalman_rts", "status": "failed", "error": str(exc)})
+    return run_log
 
 
 def evaluate_result_root(
@@ -186,9 +237,15 @@ def compare_aggregate_metrics(raw_eval: dict, smooth_eval: dict) -> dict[str, di
     return compare
 
 
-def render_compare_markdown(compare: dict[str, dict[str, float]], evaluated_count: int) -> str:
+def render_compare_markdown(
+    compare: dict[str, dict[str, float]],
+    evaluated_count: int,
+    camera_name: str = DEFAULT_CAMERA_NAME,
+) -> str:
     lines = [
         "# ViPE Kalman+RTS Comparison",
+        "",
+        f"Camera: {camera_name}",
         "",
         f"Evaluated sequences: {evaluated_count}",
         "",
@@ -218,6 +275,7 @@ def build_argparser() -> argparse.ArgumentParser:
     parser.add_argument("--seed", type=int, default=20260407, help="Random seed for reproducible sampling")
     parser.add_argument("--dt", type=float, default=1.0, help="Frame interval for smoothing")
     parser.add_argument("--camera-name", type=str, default=DEFAULT_CAMERA_NAME, help="Undistorted camera sensor name")
+    parser.add_argument("--max-parallel-jobs", type=int, default=1, help="Max concurrent ViPE subprocesses to keep active")
     parser.add_argument("--force", action="store_true", help="Re-run raw ViPE even if outputs already exist")
     return parser
 
@@ -262,26 +320,23 @@ def main() -> None:
     )
 
     run_log: list[dict] = []
-    for uuid in sampled_uuids:
-        uuid_dir = by_uuid_root / uuid
-        video_path = resolve_front_video_path(uuid_dir, camera_name=args.camera_name)
-        raw_uuid_dir = raw_root / uuid
-        smooth_uuid_dir = smooth_root / uuid
-
-        pose_artifact = find_pose_artifact(raw_uuid_dir)
-        if pose_artifact is None or args.force:
-            infer_result = run_raw_vipe(repo_root, video_path, raw_uuid_dir, python_executable=sys.executable)
-            run_log.append({"uuid": uuid, "stage": "raw_vipe", **infer_result})
-            if infer_result["returncode"] != 0:
-                continue
-        else:
-            run_log.append({"uuid": uuid, "stage": "raw_vipe", "status": "skipped_existing"})
-
-        try:
-            output_pose = run_smoothing(raw_uuid_dir, smooth_uuid_dir, dt=args.dt)
-            run_log.append({"uuid": uuid, "stage": "kalman_rts", "output_pose": str(output_pose), "status": "ok"})
-        except Exception as exc:
-            run_log.append({"uuid": uuid, "stage": "kalman_rts", "status": "failed", "error": str(exc)})
+    run_log_batches = run_bounded_workers(
+        sampled_uuids,
+        max_parallel_jobs=args.max_parallel_jobs,
+        worker=lambda uuid: run_uuid_pipeline(
+            uuid=uuid,
+            by_uuid_root=by_uuid_root,
+            repo_root=repo_root,
+            raw_root=raw_root,
+            smooth_root=smooth_root,
+            camera_name=args.camera_name,
+            dt=args.dt,
+            force=args.force,
+            python_executable=sys.executable,
+        ),
+    )
+    for batch in run_log_batches:
+        run_log.extend(batch)
 
     raw_eval = evaluate_result_root(
         by_uuid_root,
@@ -309,7 +364,11 @@ def main() -> None:
     }
     write_json(eval_root / "compare.json", compare_payload)
     (eval_root / "compare.md").write_text(
-        render_compare_markdown(compare, evaluated_count=compare_payload["evaluated_count"])
+        render_compare_markdown(
+            compare,
+            evaluated_count=compare_payload["evaluated_count"],
+            camera_name=args.camera_name,
+        )
     )
 
     print(eval_root / "compare.json")
