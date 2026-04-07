@@ -9,6 +9,7 @@ from scripts.run_vipe_kalman_rts_experiment import (
     compare_aggregate_metrics,
     discover_eligible_uuids,
     has_pose_ground_truth,
+    load_or_sample_uuids,
     render_compare_markdown,
     resolve_front_video_path,
     sample_uuids,
@@ -51,6 +52,25 @@ class VipeExperimentRunnerTest(unittest.TestCase):
             resolved = resolve_front_video_path(uuid_dir)
 
             self.assertEqual(resolved, simplecalib_video)
+
+    def test_resolve_front_video_path_supports_tele_camera_name(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            uuid = "sample-uuid"
+            camera_name = "camera_front_tele_30fov_undistorted"
+            uuid_dir = Path(tmpdir) / uuid
+            tele_video = (
+                uuid_dir
+                / "all_views_undistorted_simplecalib"
+                / "camera"
+                / camera_name
+                / f"{uuid}.{camera_name}.mp4"
+            )
+            tele_video.parent.mkdir(parents=True)
+            tele_video.touch()
+
+            resolved = resolve_front_video_path(uuid_dir, camera_name=camera_name)
+
+            self.assertEqual(resolved, tele_video)
 
     def test_compare_aggregate_metrics_computes_delta(self) -> None:
         raw_eval = {"aggregate": {"ate_se3_rmse_mean": 2.0, "rpe_trans_se3_rmse_mean": 1.0}}
@@ -119,6 +139,20 @@ class VipeExperimentRunnerTest(unittest.TestCase):
         self.assertIn("Raw ViPE", markdown)
         self.assertIn("Kalman+RTS", markdown)
         self.assertIn("ate_se3_rmse_mean", markdown)
+
+    def test_load_or_sample_uuids_prefers_saved_sample_list(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            sample_path = Path(tmpdir) / "sampled_uuids.json"
+            sample_path.write_text('["uuid-b", "uuid-a"]')
+
+            sampled = load_or_sample_uuids(
+                uuids=["uuid-a", "uuid-b", "uuid-c"],
+                sample_size=2,
+                seed=123,
+                sample_list_path=sample_path,
+            )
+
+            self.assertEqual(sampled, ["uuid-b", "uuid-a"])
 
     def test_runner_script_help_executes_directly(self) -> None:
         proc = subprocess.run(

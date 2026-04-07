@@ -9,6 +9,7 @@ from scripts.vipe_front_pose_eval_ft import (
     FRONT_VIEW_ROOT_CANDIDATES,
     _find_sensor_row,
     compute_pose_metrics,
+    discover_front_sequences,
     resolve_gt_uuid_dir,
     resolve_front_view_root,
     sensor_name_candidates,
@@ -96,6 +97,29 @@ class VipeFrontPoseEvalTest(unittest.TestCase):
         resolved = _find_sensor_row(table, "camera_front_wide_120fov_undistorted")
 
         self.assertEqual(resolved, 0)
+
+    def test_discover_front_sequences_supports_tele_camera_name(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base_dir = Path(tmpdir)
+            uuid = "sample-uuid"
+            uuid_dir = base_dir / uuid
+            camera_name = "camera_front_tele_30fov_undistorted"
+            view_root = uuid_dir / "all_views_undistorted_simplecalib" / "camera" / camera_name
+            view_root.mkdir(parents=True)
+            (view_root / f"{uuid}.{camera_name}.mp4").touch()
+            (view_root / f"{uuid}.{camera_name}.timestamps.parquet").touch()
+            (uuid_dir / "labels" / "egomotion").mkdir(parents=True)
+            (uuid_dir / "calibration" / "camera_intrinsics").mkdir(parents=True)
+            (uuid_dir / "calibration" / "sensor_extrinsics").mkdir(parents=True)
+            (uuid_dir / "labels" / "egomotion" / f"{uuid}.egomotion.parquet").touch()
+            (uuid_dir / "calibration" / "camera_intrinsics" / "camera_intrinsics.parquet").touch()
+            (uuid_dir / "calibration" / "sensor_extrinsics" / "sensor_extrinsics.parquet").touch()
+
+            records = discover_front_sequences(base_dir, camera_name=camera_name)
+
+            self.assertEqual(len(records), 1)
+            self.assertIn(camera_name, str(records[0].video_path))
+            self.assertIn(camera_name, str(records[0].timestamps_path))
 
 
 if __name__ == "__main__":

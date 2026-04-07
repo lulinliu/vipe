@@ -17,11 +17,10 @@ if __package__ in (None, ""):
     if str(repo_root_for_imports) not in sys.path:
         sys.path.insert(0, str(repo_root_for_imports))
 
-from scripts.vipe_front_pose_eval_ft import evaluate_sequence, summarize_metrics
+from scripts.vipe_front_pose_eval_ft import DEFAULT_CAMERA_NAME, evaluate_sequence, summarize_metrics
 from scripts.vipe_kalman_rts import smooth_pose_artifact
 
 
-UNDIST_CAMERA_NAME = "camera_front_wide_120fov_undistorted"
 FRONT_VIEW_ROOT_CANDIDATES = (
     "all_views_undistorted_simplecalib",
     "all_views_undistorted",
@@ -30,15 +29,15 @@ FRONT_VIEW_ROOT_CANDIDATES = (
 )
 
 
-def resolve_front_video_path(uuid_dir: Path) -> Path:
+def resolve_front_video_path(uuid_dir: Path, camera_name: str = DEFAULT_CAMERA_NAME) -> Path:
     uuid_dir = uuid_dir.resolve()
     for root_name in FRONT_VIEW_ROOT_CANDIDATES:
         video_path = (
             uuid_dir
             / root_name
             / "camera"
-            / UNDIST_CAMERA_NAME
-            / f"{uuid_dir.name}.{UNDIST_CAMERA_NAME}.mp4"
+            / camera_name
+            / f"{uuid_dir.name}.{camera_name}.mp4"
         )
         if video_path.exists():
             return video_path
@@ -55,12 +54,16 @@ def has_pose_ground_truth(uuid_dir: Path) -> bool:
     return all(path.exists() for path in required_paths)
 
 
-def discover_eligible_uuids(by_uuid_root: Path, gt_by_uuid_root: Path | None = None) -> list[str]:
+def discover_eligible_uuids(
+    by_uuid_root: Path,
+    gt_by_uuid_root: Path | None = None,
+    camera_name: str = DEFAULT_CAMERA_NAME,
+) -> list[str]:
     eligible: list[str] = []
     for uuid_dir in sorted(path for path in by_uuid_root.iterdir() if path.is_dir() or path.is_symlink()):
         try:
             resolved_uuid_dir = uuid_dir.resolve()
-            resolve_front_video_path(resolved_uuid_dir)
+            resolve_front_video_path(resolved_uuid_dir, camera_name=camera_name)
         except FileNotFoundError:
             continue
         gt_uuid_dir = (gt_by_uuid_root / uuid_dir.name) if gt_by_uuid_root is not None else resolved_uuid_dir
@@ -75,6 +78,17 @@ def sample_uuids(uuids: list[str], sample_size: int, seed: int) -> list[str]:
         raise ValueError(f"Need at least {sample_size} eligible uuids, got {len(uuids)}")
     rng = random.Random(seed)
     return sorted(rng.sample(sorted(uuids), sample_size))
+
+
+def load_or_sample_uuids(
+    uuids: list[str],
+    sample_size: int,
+    seed: int,
+    sample_list_path: Path | None = None,
+) -> list[str]:
+    if sample_list_path is not None:
+        return json.loads(sample_list_path.read_text())
+    return sample_uuids(uuids, sample_size=sample_size, seed=seed)
 
 
 def find_pose_artifact(result_dir: Path) -> Path | None:
@@ -119,7 +133,13 @@ def run_smoothing(raw_uuid_dir: Path, smooth_uuid_dir: Path, dt: float) -> Path:
     return output_pose
 
 
-def evaluate_result_root(video_by_uuid_root: Path, result_root: Path, uuids: list[str], gt_by_uuid_root: Path | None = None) -> dict:
+def evaluate_result_root(
+    video_by_uuid_root: Path,
+    result_root: Path,
+    uuids: list[str],
+    gt_by_uuid_root: Path | None = None,
+    camera_name: str = DEFAULT_CAMERA_NAME,
+) -> dict:
     rows: list[dict] = []
     missing: list[str] = []
     for uuid in uuids:
@@ -128,11 +148,19 @@ def evaluate_result_root(video_by_uuid_root: Path, result_root: Path, uuids: lis
             missing.append(uuid)
             continue
         gt_uuid_dir = (gt_by_uuid_root / uuid) if gt_by_uuid_root is not None else (video_by_uuid_root / uuid)
-        rows.append(evaluate_sequence(video_by_uuid_root / uuid, result_dir, gt_uuid_dir=gt_uuid_dir))
+        rows.append(
+            evaluate_sequence(
+                video_by_uuid_root / uuid,
+                result_dir,
+                gt_uuid_dir=gt_uuid_dir,
+                camera_name=camera_name,
+            )
+        )
     return {
         "base_dir": str(video_by_uuid_root),
         "gt_base_dir": str(gt_by_uuid_root) if gt_by_uuid_root is not None else str(video_by_uuid_root),
         "result_dir": str(result_root),
+        "camera_name": camera_name,
         "evaluated_count": len(rows),
         "missing_count": len(missing),
         "missing_uuids": missing,
@@ -185,9 +213,11 @@ def build_argparser() -> argparse.ArgumentParser:
     parser.add_argument("--by-uuid-root", type=Path, required=True, help="Input by_uuid root")
     parser.add_argument("--experiment-root", type=Path, required=True, help="Output experiment root")
     parser.add_argument("--gt-by-uuid-root", type=Path, default=None, help="Optional alternate by_uuid root that contains GT labels/calibration")
+    parser.add_argument("--sample-list-path", type=Path, default=None, help="Optional JSON file with the exact UUID list to reuse")
     parser.add_argument("--sample-size", type=int, default=10, help="Number of UUIDs to sample")
     parser.add_argument("--seed", type=int, default=20260407, help="Random seed for reproducible sampling")
     parser.add_argument("--dt", type=float, default=1.0, help="Frame interval for smoothing")
+    parser.add_argument("--camera-name", type=str, default=DEFAULT_CAMERA_NAME, help="Undistorted camera sensor name")
     parser.add_argument("--force", action="store_true", help="Re-run raw ViPE even if outputs already exist")
     return parser
 
@@ -202,8 +232,17 @@ def main() -> None:
     smooth_root = experiment_root / "runs" / "kalman_rts"
     eval_root = experiment_root / "eval"
 
-    eligible_uuids = discover_eligible_uuids(by_uuid_root, gt_by_uuid_root=gt_by_uuid_root)
-    sampled_uuids = sample_uuids(eligible_uuids, sample_size=args.sample_size, seed=args.seed)
+    eligible_uuids = discover_eligible_uuids(
+        by_uuid_root,
+        gt_by_uuid_root=gt_by_uuid_root,
+        camera_name=args.camera_name,
+    )
+    sampled_uuids = load_or_sample_uuids(
+        eligible_uuids,
+        sample_size=args.sample_size,
+        seed=args.seed,
+        sample_list_path=args.sample_list_path,
+    )
 
     experiment_root.mkdir(parents=True, exist_ok=True)
     (experiment_root / "sampled_uuids.json").write_text(json.dumps(sampled_uuids, indent=2))
@@ -213,6 +252,8 @@ def main() -> None:
             "by_uuid_root": str(by_uuid_root),
             "gt_by_uuid_root": str(gt_by_uuid_root) if gt_by_uuid_root is not None else None,
             "experiment_root": str(experiment_root),
+            "camera_name": args.camera_name,
+            "sample_list_path": str(args.sample_list_path) if args.sample_list_path is not None else None,
             "sample_size": args.sample_size,
             "seed": args.seed,
             "dt": args.dt,
@@ -223,7 +264,7 @@ def main() -> None:
     run_log: list[dict] = []
     for uuid in sampled_uuids:
         uuid_dir = by_uuid_root / uuid
-        video_path = resolve_front_video_path(uuid_dir)
+        video_path = resolve_front_video_path(uuid_dir, camera_name=args.camera_name)
         raw_uuid_dir = raw_root / uuid
         smooth_uuid_dir = smooth_root / uuid
 
@@ -242,14 +283,27 @@ def main() -> None:
         except Exception as exc:
             run_log.append({"uuid": uuid, "stage": "kalman_rts", "status": "failed", "error": str(exc)})
 
-    raw_eval = evaluate_result_root(by_uuid_root, raw_root, sampled_uuids, gt_by_uuid_root=gt_by_uuid_root)
-    smooth_eval = evaluate_result_root(by_uuid_root, smooth_root, sampled_uuids, gt_by_uuid_root=gt_by_uuid_root)
+    raw_eval = evaluate_result_root(
+        by_uuid_root,
+        raw_root,
+        sampled_uuids,
+        gt_by_uuid_root=gt_by_uuid_root,
+        camera_name=args.camera_name,
+    )
+    smooth_eval = evaluate_result_root(
+        by_uuid_root,
+        smooth_root,
+        sampled_uuids,
+        gt_by_uuid_root=gt_by_uuid_root,
+        camera_name=args.camera_name,
+    )
     write_json(eval_root / "raw_eval.json", raw_eval)
     write_json(eval_root / "kalman_rts_eval.json", smooth_eval)
 
     compare = compare_aggregate_metrics(raw_eval, smooth_eval)
     compare_payload = {
         "evaluated_count": min(raw_eval["evaluated_count"], smooth_eval["evaluated_count"]),
+        "camera_name": args.camera_name,
         "compare": compare,
         "run_log": run_log,
     }

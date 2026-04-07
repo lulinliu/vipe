@@ -16,7 +16,7 @@ import pyarrow.parquet as pq
 from scipy.spatial.transform import Rotation, Slerp
 
 
-UNDIST_CAMERA_NAME = "camera_front_wide_120fov_undistorted"
+DEFAULT_CAMERA_NAME = "camera_front_wide_120fov_undistorted"
 FRONT_VIEW_ROOT_CANDIDATES = (
     "all_views_undistorted_simplecalib",
     "all_views_undistorted",
@@ -51,7 +51,7 @@ def resolve_gt_uuid_dir(video_uuid_dir: Path, gt_uuid_dir: Path | None = None) -
     return video_uuid_dir.resolve()
 
 
-def discover_front_sequences(base_dir: Path) -> list[FrontSequenceRecord]:
+def discover_front_sequences(base_dir: Path, camera_name: str = DEFAULT_CAMERA_NAME) -> list[FrontSequenceRecord]:
     records: list[FrontSequenceRecord] = []
     for uuid_dir in sorted(path for path in base_dir.iterdir() if path.is_dir()):
         try:
@@ -62,14 +62,14 @@ def discover_front_sequences(base_dir: Path) -> list[FrontSequenceRecord]:
         video_path = (
             view_root
             / "camera"
-            / UNDIST_CAMERA_NAME
-            / f"{uuid_dir.name}.{UNDIST_CAMERA_NAME}.mp4"
+            / camera_name
+            / f"{uuid_dir.name}.{camera_name}.mp4"
         )
         timestamps_path = (
             view_root
             / "camera"
-            / UNDIST_CAMERA_NAME
-            / f"{uuid_dir.name}.{UNDIST_CAMERA_NAME}.timestamps.parquet"
+            / camera_name
+            / f"{uuid_dir.name}.{camera_name}.timestamps.parquet"
         )
         egomotion_path = uuid_dir.resolve() / "labels" / "egomotion" / f"{uuid_dir.name}.egomotion.parquet"
         intrinsics_path = uuid_dir.resolve() / "calibration" / "camera_intrinsics" / "camera_intrinsics.parquet"
@@ -231,12 +231,16 @@ def compute_pose_metrics(pred_poses: np.ndarray, gt_poses: np.ndarray) -> dict[s
     }
 
 
-def load_front_ground_truth(video_uuid_dir: Path, gt_uuid_dir: Path | None = None) -> np.ndarray:
+def load_front_ground_truth(
+    video_uuid_dir: Path,
+    gt_uuid_dir: Path | None = None,
+    camera_name: str = DEFAULT_CAMERA_NAME,
+) -> np.ndarray:
     video_uuid_dir = video_uuid_dir.resolve()
     gt_uuid_dir = resolve_gt_uuid_dir(video_uuid_dir, gt_uuid_dir)
     view_root = resolve_front_view_root(gt_uuid_dir)
     timestamps = _read_parquet_dict(
-        view_root / "camera" / UNDIST_CAMERA_NAME / f"{gt_uuid_dir.name}.{UNDIST_CAMERA_NAME}.timestamps.parquet"
+        view_root / "camera" / camera_name / f"{gt_uuid_dir.name}.{camera_name}.timestamps.parquet"
     )
     egomotion = _read_parquet_dict(gt_uuid_dir / "labels" / "egomotion" / f"{gt_uuid_dir.name}.egomotion.parquet")
     extrinsics = _read_parquet_dict(gt_uuid_dir / "calibration" / "sensor_extrinsics" / "sensor_extrinsics.parquet")
@@ -261,7 +265,7 @@ def load_front_ground_truth(video_uuid_dir: Path, gt_uuid_dir: Path | None = Non
         source_poses=ego_poses,
         target_timestamps=np.asarray(timestamps["timestamp"]),
     )
-    extr_idx = _find_sensor_row(extrinsics, UNDIST_CAMERA_NAME)
+    extr_idx = _find_sensor_row(extrinsics, camera_name)
     camera_extrinsics = pose_matrix_from_components(
         extrinsics["qx"][extr_idx],
         extrinsics["qy"][extr_idx],
@@ -281,12 +285,17 @@ def find_single_artifact_stem(result_dir: Path) -> str:
     return candidates[0].stem
 
 
-def evaluate_sequence(video_uuid_dir: Path, result_dir: Path, gt_uuid_dir: Path | None = None) -> dict[str, float]:
+def evaluate_sequence(
+    video_uuid_dir: Path,
+    result_dir: Path,
+    gt_uuid_dir: Path | None = None,
+    camera_name: str = DEFAULT_CAMERA_NAME,
+) -> dict[str, float]:
     artifact_stem = find_single_artifact_stem(result_dir)
     pred_pose_npz = np.load(result_dir / "pose" / f"{artifact_stem}.npz")
     pred_pose_inds = pred_pose_npz["inds"]
     pred_poses = pred_pose_npz["data"].astype(np.float64)
-    gt_poses_all = load_front_ground_truth(video_uuid_dir, gt_uuid_dir=gt_uuid_dir)
+    gt_poses_all = load_front_ground_truth(video_uuid_dir, gt_uuid_dir=gt_uuid_dir, camera_name=camera_name)
     gt_poses = gt_poses_all[pred_pose_inds]
     metrics = compute_pose_metrics(pred_poses, gt_poses)
     metrics["uuid"] = video_uuid_dir.name
@@ -318,6 +327,7 @@ def build_argparser() -> argparse.ArgumentParser:
     parser.add_argument("--result-dir", type=Path, required=True, help="Result root with one subdir per uuid")
     parser.add_argument("--sample-list-path", type=Path, required=True, help="JSON file containing target uuids")
     parser.add_argument("--output-json", type=Path, required=True, help="Path to write evaluation summary json")
+    parser.add_argument("--camera-name", type=str, default=DEFAULT_CAMERA_NAME, help="Undistorted camera sensor name")
     return parser
 
 
@@ -332,7 +342,7 @@ def main() -> None:
         if not (result_subdir / "pose").exists():
             missing.append(uuid)
             continue
-        rows.append(evaluate_sequence(uuid_dir, result_subdir))
+        rows.append(evaluate_sequence(uuid_dir, result_subdir, camera_name=args.camera_name))
 
     summary = {
         "base_dir": str(args.base_dir),
