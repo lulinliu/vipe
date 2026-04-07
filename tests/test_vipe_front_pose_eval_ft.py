@@ -7,9 +7,11 @@ from pathlib import Path
 
 from scripts.vipe_front_pose_eval_ft import (
     FRONT_VIEW_ROOT_CANDIDATES,
+    _find_sensor_row,
     compute_pose_metrics,
     resolve_gt_uuid_dir,
     resolve_front_view_root,
+    sensor_name_candidates,
     summarize_metrics,
 )
 
@@ -81,6 +83,19 @@ class VipeFrontPoseEvalTest(unittest.TestCase):
             resolved = resolve_front_view_root(uuid_dir)
 
             self.assertEqual(resolved, uuid_dir / "front_view_undistorted")
+
+    def test_sensor_name_candidates_support_undistorted_alias(self) -> None:
+        self.assertEqual(
+            sensor_name_candidates("camera_front_wide_120fov_undistorted"),
+            ("camera_front_wide_120fov_undistorted", "camera_front_wide_120fov"),
+        )
+
+    def test_find_sensor_row_falls_back_to_distorted_sensor_name(self) -> None:
+        table = {"sensor_name": ["camera_front_wide_120fov"]}
+
+        resolved = _find_sensor_row(table, "camera_front_wide_120fov_undistorted")
+
+        self.assertEqual(resolved, 0)
 
 
 if __name__ == "__main__":

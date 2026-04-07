@@ -126,11 +126,20 @@ def compose_camera_trajectory(ego_poses: np.ndarray, camera_extrinsics: np.ndarr
     return ego_poses @ camera_extrinsics[None, :, :]
 
 
+def sensor_name_candidates(sensor_name: str) -> tuple[str, ...]:
+    candidates = [sensor_name]
+    undist_suffix = "_undistorted"
+    if sensor_name.endswith(undist_suffix):
+        candidates.append(sensor_name[: -len(undist_suffix)])
+    return tuple(candidates)
+
+
 def _find_sensor_row(table: dict, sensor_name: str) -> int:
+    candidate_names = sensor_name_candidates(sensor_name)
     for idx, value in enumerate(table["sensor_name"]):
-        if value == sensor_name:
+        if value in candidate_names:
             return idx
-    raise ValueError(f"Sensor {sensor_name} not found")
+    raise ValueError(f"Sensor {sensor_name} not found; tried {candidate_names}")
 
 
 def _rigid_align_points(source_pts: np.ndarray, target_pts: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
