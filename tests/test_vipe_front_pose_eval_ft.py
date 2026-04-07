@@ -73,6 +73,15 @@ class VipeFrontPoseEvalTest(unittest.TestCase):
 
             self.assertEqual(resolved, gt_uuid_dir.resolve())
 
+    def test_resolve_front_view_root_supports_front_view_layout(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            uuid_dir = Path(tmpdir) / "sample-uuid"
+            (uuid_dir / "front_view_undistorted").mkdir(parents=True)
+
+            resolved = resolve_front_view_root(uuid_dir)
+
+            self.assertEqual(resolved, uuid_dir / "front_view_undistorted")
+
 
 if __name__ == "__main__":
     unittest.main()

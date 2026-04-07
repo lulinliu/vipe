@@ -20,6 +20,8 @@ UNDIST_CAMERA_NAME = "camera_front_wide_120fov_undistorted"
 FRONT_VIEW_ROOT_CANDIDATES = (
     "all_views_undistorted_simplecalib",
     "all_views_undistorted",
+    "front_view_undistorted",
+    "front_view_undistorted_smoke",
 )
 
 
