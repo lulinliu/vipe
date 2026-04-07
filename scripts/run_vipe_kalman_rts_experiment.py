@@ -12,6 +12,11 @@ import sys
 
 from pathlib import Path
 
+if __package__ in (None, ""):
+    repo_root_for_imports = Path(__file__).resolve().parent.parent
+    if str(repo_root_for_imports) not in sys.path:
+        sys.path.insert(0, str(repo_root_for_imports))
+
 from scripts.vipe_front_pose_eval_ft import evaluate_sequence, summarize_metrics
 from scripts.vipe_kalman_rts import smooth_pose_artifact
 

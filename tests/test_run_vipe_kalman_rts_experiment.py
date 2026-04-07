@@ -1,3 +1,5 @@
+import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -72,6 +74,17 @@ class VipeExperimentRunnerTest(unittest.TestCase):
         self.assertIn("Raw ViPE", markdown)
         self.assertIn("Kalman+RTS", markdown)
         self.assertIn("ate_se3_rmse_mean", markdown)
+
+    def test_runner_script_help_executes_directly(self) -> None:
+        proc = subprocess.run(
+            [sys.executable, "scripts/run_vipe_kalman_rts_experiment.py", "--help"],
+            capture_output=True,
+            text=True,
+            cwd=Path(__file__).resolve().parents[1],
+        )
+
+        self.assertEqual(proc.returncode, 0, msg=proc.stderr)
+        self.assertIn("sample-size", proc.stdout)
 
 
 if __name__ == "__main__":
