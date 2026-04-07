@@ -164,6 +164,7 @@ cython_debug/
 playground.py
 TODO.md
 vipe_results/
+.worktrees/
 /try_*.py
 /external/
 JIAHUI.md
