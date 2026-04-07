@@ -43,12 +43,26 @@ def resolve_front_video_path(uuid_dir: Path) -> Path:
     raise FileNotFoundError(f"No front undistorted video found under {uuid_dir}")
 
 
-def discover_eligible_uuids(by_uuid_root: Path) -> list[str]:
+def has_pose_ground_truth(uuid_dir: Path) -> bool:
+    uuid_dir = uuid_dir.resolve()
+    required_paths = (
+        uuid_dir / "labels" / "egomotion" / f"{uuid_dir.name}.egomotion.parquet",
+        uuid_dir / "calibration" / "camera_intrinsics" / "camera_intrinsics.parquet",
+        uuid_dir / "calibration" / "sensor_extrinsics" / "sensor_extrinsics.parquet",
+    )
+    return all(path.exists() for path in required_paths)
+
+
+def discover_eligible_uuids(by_uuid_root: Path, gt_by_uuid_root: Path | None = None) -> list[str]:
     eligible: list[str] = []
     for uuid_dir in sorted(path for path in by_uuid_root.iterdir() if path.is_dir() or path.is_symlink()):
         try:
-            resolve_front_video_path(uuid_dir)
+            resolved_uuid_dir = uuid_dir.resolve()
+            resolve_front_video_path(resolved_uuid_dir)
         except FileNotFoundError:
+            continue
+        gt_uuid_dir = (gt_by_uuid_root / uuid_dir.name) if gt_by_uuid_root is not None else resolved_uuid_dir
+        if not has_pose_ground_truth(gt_uuid_dir):
             continue
         eligible.append(uuid_dir.name)
     return eligible
@@ -103,7 +117,7 @@ def run_smoothing(raw_uuid_dir: Path, smooth_uuid_dir: Path, dt: float) -> Path:
     return output_pose
 
 
-def evaluate_result_root(by_uuid_root: Path, result_root: Path, uuids: list[str]) -> dict:
+def evaluate_result_root(video_by_uuid_root: Path, result_root: Path, uuids: list[str], gt_by_uuid_root: Path | None = None) -> dict:
     rows: list[dict] = []
     missing: list[str] = []
     for uuid in uuids:
@@ -111,9 +125,11 @@ def evaluate_result_root(by_uuid_root: Path, result_root: Path, uuids: list[str]
         if find_pose_artifact(result_dir) is None:
             missing.append(uuid)
             continue
-        rows.append(evaluate_sequence(by_uuid_root / uuid, result_dir))
+        gt_uuid_dir = (gt_by_uuid_root / uuid) if gt_by_uuid_root is not None else (video_by_uuid_root / uuid)
+        rows.append(evaluate_sequence(video_by_uuid_root / uuid, result_dir, gt_uuid_dir=gt_uuid_dir))
     return {
-        "base_dir": str(by_uuid_root),
+        "base_dir": str(video_by_uuid_root),
+        "gt_base_dir": str(gt_by_uuid_root) if gt_by_uuid_root is not None else str(video_by_uuid_root),
         "result_dir": str(result_root),
         "evaluated_count": len(rows),
         "missing_count": len(missing),
@@ -166,6 +182,7 @@ def build_argparser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run raw ViPE versus Kalman+RTS-smoothed ViPE on fixed-seed front videos.")
     parser.add_argument("--by-uuid-root", type=Path, required=True, help="Input by_uuid root")
     parser.add_argument("--experiment-root", type=Path, required=True, help="Output experiment root")
+    parser.add_argument("--gt-by-uuid-root", type=Path, default=None, help="Optional alternate by_uuid root that contains GT labels/calibration")
     parser.add_argument("--sample-size", type=int, default=10, help="Number of UUIDs to sample")
     parser.add_argument("--seed", type=int, default=20260407, help="Random seed for reproducible sampling")
     parser.add_argument("--dt", type=float, default=1.0, help="Frame interval for smoothing")
@@ -177,12 +194,13 @@ def main() -> None:
     args = build_argparser().parse_args()
     repo_root = Path(__file__).resolve().parent.parent
     by_uuid_root = args.by_uuid_root
+    gt_by_uuid_root = args.gt_by_uuid_root.resolve() if args.gt_by_uuid_root is not None else None
     experiment_root = args.experiment_root
     raw_root = experiment_root / "runs" / "raw"
     smooth_root = experiment_root / "runs" / "kalman_rts"
     eval_root = experiment_root / "eval"
 
-    eligible_uuids = discover_eligible_uuids(by_uuid_root)
+    eligible_uuids = discover_eligible_uuids(by_uuid_root, gt_by_uuid_root=gt_by_uuid_root)
     sampled_uuids = sample_uuids(eligible_uuids, sample_size=args.sample_size, seed=args.seed)
 
     experiment_root.mkdir(parents=True, exist_ok=True)
@@ -191,6 +209,7 @@ def main() -> None:
         experiment_root / "manifest.json",
         {
             "by_uuid_root": str(by_uuid_root),
+            "gt_by_uuid_root": str(gt_by_uuid_root) if gt_by_uuid_root is not None else None,
             "experiment_root": str(experiment_root),
             "sample_size": args.sample_size,
             "seed": args.seed,
@@ -221,8 +240,8 @@ def main() -> None:
         except Exception as exc:
             run_log.append({"uuid": uuid, "stage": "kalman_rts", "status": "failed", "error": str(exc)})
 
-    raw_eval = evaluate_result_root(by_uuid_root, raw_root, sampled_uuids)
-    smooth_eval = evaluate_result_root(by_uuid_root, smooth_root, sampled_uuids)
+    raw_eval = evaluate_result_root(by_uuid_root, raw_root, sampled_uuids, gt_by_uuid_root=gt_by_uuid_root)
+    smooth_eval = evaluate_result_root(by_uuid_root, smooth_root, sampled_uuids, gt_by_uuid_root=gt_by_uuid_root)
     write_json(eval_root / "raw_eval.json", raw_eval)
     write_json(eval_root / "kalman_rts_eval.json", smooth_eval)
 

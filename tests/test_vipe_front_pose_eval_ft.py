@@ -8,6 +8,7 @@ from pathlib import Path
 from scripts.vipe_front_pose_eval_ft import (
     FRONT_VIEW_ROOT_CANDIDATES,
     compute_pose_metrics,
+    resolve_gt_uuid_dir,
     resolve_front_view_root,
     summarize_metrics,
 )
@@ -60,6 +61,17 @@ class VipeFrontPoseEvalTest(unittest.TestCase):
         self.assertIn("ate_se3_rmse_mean", summary)
         self.assertIn("rpe_rot_se3_rmse_deg_median", summary)
         self.assertNotIn("intrinsics_rmse_mean", summary)
+
+    def test_resolve_gt_uuid_dir_prefers_override(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+            video_uuid_dir = base / "video_root" / "uuid-a"
+            gt_uuid_dir = base / "gt_root" / "uuid-a"
+            gt_uuid_dir.mkdir(parents=True)
+
+            resolved = resolve_gt_uuid_dir(video_uuid_dir, gt_uuid_dir)
+
+            self.assertEqual(resolved, gt_uuid_dir.resolve())
 
 
 if __name__ == "__main__":

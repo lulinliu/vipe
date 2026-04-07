@@ -43,6 +43,12 @@ def resolve_front_view_root(uuid_dir: Path) -> Path:
     raise FileNotFoundError(f"No supported front-view root found under {uuid_dir}")
 
 
+def resolve_gt_uuid_dir(video_uuid_dir: Path, gt_uuid_dir: Path | None = None) -> Path:
+    if gt_uuid_dir is not None:
+        return gt_uuid_dir.resolve()
+    return video_uuid_dir.resolve()
+
+
 def discover_front_sequences(base_dir: Path) -> list[FrontSequenceRecord]:
     records: list[FrontSequenceRecord] = []
     for uuid_dir in sorted(path for path in base_dir.iterdir() if path.is_dir()):
@@ -214,14 +220,15 @@ def compute_pose_metrics(pred_poses: np.ndarray, gt_poses: np.ndarray) -> dict[s
     }
 
 
-def load_front_ground_truth(uuid_dir: Path) -> np.ndarray:
-    uuid_dir = uuid_dir.resolve()
-    view_root = resolve_front_view_root(uuid_dir)
+def load_front_ground_truth(video_uuid_dir: Path, gt_uuid_dir: Path | None = None) -> np.ndarray:
+    video_uuid_dir = video_uuid_dir.resolve()
+    gt_uuid_dir = resolve_gt_uuid_dir(video_uuid_dir, gt_uuid_dir)
+    view_root = resolve_front_view_root(gt_uuid_dir)
     timestamps = _read_parquet_dict(
-        view_root / "camera" / UNDIST_CAMERA_NAME / f"{uuid_dir.name}.{UNDIST_CAMERA_NAME}.timestamps.parquet"
+        view_root / "camera" / UNDIST_CAMERA_NAME / f"{gt_uuid_dir.name}.{UNDIST_CAMERA_NAME}.timestamps.parquet"
     )
-    egomotion = _read_parquet_dict(uuid_dir / "labels" / "egomotion" / f"{uuid_dir.name}.egomotion.parquet")
-    extrinsics = _read_parquet_dict(uuid_dir / "calibration" / "sensor_extrinsics" / "sensor_extrinsics.parquet")
+    egomotion = _read_parquet_dict(gt_uuid_dir / "labels" / "egomotion" / f"{gt_uuid_dir.name}.egomotion.parquet")
+    extrinsics = _read_parquet_dict(gt_uuid_dir / "calibration" / "sensor_extrinsics" / "sensor_extrinsics.parquet")
 
     ego_poses = np.stack(
         [
@@ -263,15 +270,15 @@ def find_single_artifact_stem(result_dir: Path) -> str:
     return candidates[0].stem
 
 
-def evaluate_sequence(uuid_dir: Path, result_dir: Path) -> dict[str, float]:
+def evaluate_sequence(video_uuid_dir: Path, result_dir: Path, gt_uuid_dir: Path | None = None) -> dict[str, float]:
     artifact_stem = find_single_artifact_stem(result_dir)
     pred_pose_npz = np.load(result_dir / "pose" / f"{artifact_stem}.npz")
     pred_pose_inds = pred_pose_npz["inds"]
     pred_poses = pred_pose_npz["data"].astype(np.float64)
-    gt_poses_all = load_front_ground_truth(uuid_dir)
+    gt_poses_all = load_front_ground_truth(video_uuid_dir, gt_uuid_dir=gt_uuid_dir)
     gt_poses = gt_poses_all[pred_pose_inds]
     metrics = compute_pose_metrics(pred_poses, gt_poses)
-    metrics["uuid"] = uuid_dir.name
+    metrics["uuid"] = video_uuid_dir.name
     metrics["num_frames"] = int(len(pred_pose_inds))
     metrics["artifact_stem"] = artifact_stem
     return metrics
